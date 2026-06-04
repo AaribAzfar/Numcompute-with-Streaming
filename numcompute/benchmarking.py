@@ -1,252 +1,165 @@
-import time
-import csv
-from pathlib import Path
+"""
+benchmark.py
+============
+Compares single DecisionTree vs RandomForest vs Bagging vs Boosting
+under streaming conditions.
+
+Metrics tracked per model:
+    - Per-chunk accuracy
+    - Cumulative accuracy
+    - Time per chunk (seconds)
+    - Memory footprint (KB)
+
+Run:  python benchmark.py
+"""
 
 import numpy as np
-
-from numcompute.io import read_csv
-from numcompute.stats import mean, std
-from numcompute.sort_search import sort, topk
-from numcompute.rank import rank, percentile
-from numcompute.utils import pairwise_distances
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
-DATA_DIR = ROOT / "data"
-
-DATASETS = {
-    "WineQT": DATA_DIR / "WineQT.csv",
-    "Iris": DATA_DIR / "Iris.csv",
-    "Sleep": DATA_DIR / "sleep_data.csv",
-}
-
-
-def timer(func, *args, repeat=5):
-    times = []
-
-    for _ in range(repeat):
-        start = time.perf_counter()
-        func(*args)
-        end = time.perf_counter()
-        times.append(end - start)
-
-    return min(times)
-
-
-def load_numeric_csv(path):
-    raw = read_csv(path, delimiter=",", dtype=object)
-
-    # If CSV has header row, remove it
-    raw = np.asarray(raw, dtype=object)
-
-    if raw.ndim == 1:
-        raw = raw.reshape(-1, 1)
-
-    # Remove first row as header
-    data = raw[1:, :]
-
-    numeric_cols = []
-
-    for i in range(data.shape[1]):
-        col = data[:, i]
-
-        try:
-            numeric_col = col.astype(float)
-            numeric_cols.append(numeric_col)
-        except (ValueError, TypeError):
-            # Categorical columns are ignored for benchmarking
-            continue
-
-    if not numeric_cols:
-        raise ValueError(f"No numeric columns found in {path}")
-
-    X = np.column_stack(numeric_cols)
-
-    # Remove the rows with NaN or infinity
-    X = X[np.isfinite(X).all(axis=1)]
-
-    return X
-
-
-# ---------------- LOOP BASELINES ---------------- #
-
-def loop_mean(arr):
-    total = 0.0
-    count = 0
-
-    for v in arr:
-        if not np.isnan(v):
-            total += v
-            count += 1
-
-    return total / count
-
-
-def loop_std(arr):
-    m = loop_mean(arr)
-    total = 0.0
-    count = 0
-
-    for v in arr:
-        if not np.isnan(v):
-            total += (v - m) ** 2
-            count += 1
-
-    return (total / count) ** 0.5
-
-
-def loop_sort(arr):
-    return sorted(arr)
-
-
-def loop_topk(arr, k):
-    return sorted(arr)[-k:]
-
-
-def loop_rank(arr):
-    sorted_vals = sorted(arr)
-    result = []
-
-    for v in arr:
-        positions = [i + 1 for i, x in enumerate(sorted_vals) if x == v]
-        result.append(sum(positions) / len(positions))
-
-    return np.array(result)
-
-
-def loop_percentile(arr, q):
-    arr = sorted(arr)
-    pos = (q / 100) * (len(arr) - 1)
-
-    lower = int(np.floor(pos))
-    upper = int(np.ceil(pos))
-
-    if lower == upper:
-        return arr[lower]
-
-    weight = pos - lower
-    return arr[lower] * (1 - weight) + arr[upper] * weight
-
-
-def loop_pairwise_distances(X, Y):
-    distances = []
-
-    for x in X:
-        row = []
-        for y in Y:
-            dist = np.sqrt(np.sum((x - y) ** 2))
-            row.append(dist)
-        distances.append(row)
-
-    return np.array(distances)
-
-
-# ---------------- BENCHMARK ---------------- #
-
-def benchmark_dataset(name, X):
-    results = []
-
-    flat = X.ravel()
-    flat = flat[np.isfinite(flat)]
-
-    if len(flat) > 5000:
-        flat = flat[:5000]
-
-    k = min(10, len(flat))
-
-    tests = [
-        ("mean", loop_mean, mean, np.nanmean, (flat,)),
-        ("std", loop_std, std, np.nanstd, (flat,)),
-        ("sort", loop_sort, sort, np.sort, (flat,)),
-        ("topk", loop_topk, topk, None, (flat, k)),
-        ("rank", loop_rank, rank, None, (flat,)),
-        ("percentile", loop_percentile, percentile, np.nanpercentile, (flat, 50)),
-    ]
-
-    for op, loop_f, my_f, np_f, args in tests:
-        t_loop = timer(loop_f, *args)
-        t_my = timer(my_f, *args)
-
-        t_np = timer(np_f, *args) if np_f else None
-
-        results.append({
-            "dataset": name,
-            "operation": op,
-            "loop": t_loop,
-            "numcompute": t_my,
-            "numpy": t_np,
-            "speedup": t_loop / t_my if t_my > 0 else np.inf,
-        })
-
-    # Pairwise distance benchmark from utils.py
-    # Kept separate because pairwise distance is O(n^2)
-    n_pairwise = min(100, X.shape[0])
-    X_small = X[:n_pairwise, :]
-
-    t_loop = timer(loop_pairwise_distances, X_small, X_small)
-    t_my = timer(pairwise_distances, X_small, X_small)
-
-    results.append({
-        "dataset": name,
-        "operation": "pairwise_distances",
-        "loop": t_loop,
-        "numcompute": t_my,
-        "numpy": None,
-        "speedup": t_loop / t_my if t_my > 0 else np.inf,
-    })
-
-    return results
-
-
-def print_results(results):
-    print("\nBENCHMARK RESULTS")
-    print("-" * 95)
-    print(f"{'Dataset':<10}{'Operation':<15}{'Loop':<12}{'NumCompute':<15}{'NumPy':<12}{'Speedup'}")
-    print("-" * 95)
-
-    for r in results:
-        np_val = f"{r['numpy']:.6f}" if r["numpy"] is not None else "N/A"
-
-        print(
-            f"{r['dataset']:<10}"
-            f"{r['operation']:<15}"
-            f"{r['loop']:<12.6f}"
-            f"{r['numcompute']:<15.6f}"
-            f"{np_val:<12}"
-            f"{r['speedup']:.2f}x"
-        )
-
-
-def save_results(results):
-    out_path = ROOT / "benchmark_results.csv"
-
-    with open(out_path, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=results[0].keys())
-        writer.writeheader()
-        writer.writerows(results)
-
-    print(f"\nSaved to: {out_path}")
-
-
-def main():
-    all_results = []
-
-    print("Loading the datasets....\n")
-
-    for name, path in DATASETS.items():
-        if not path.exists():
-            print(f"{name} not found → {path}")
-            continue
-
-        X = load_numeric_csv(path)
-        print(f"{name}: shape={X.shape}")
-
-        all_results.extend(benchmark_dataset(name, X))
-
-    print_results(all_results)
-    save_results(all_results)
-
+import time
+
+from tree import DecisionTreeClassifier, RandomForestClassifier
+from ensemble import BaggingClassifier, BoostingClassifier
+from stream import StreamTrainer
+from visualise import compare_models, plot_metric_over_time
+
+
+# ======================================================================
+# Dataset
+# ======================================================================
+
+def make_dataset(n=500, n_features=6, seed=42):
+    """
+    Generate a synthetic binary classification dataset.
+    Classes are separated by the sum of the first two features.
+    """
+    np.random.seed(seed)
+    X = np.random.randn(n, n_features)
+    y = ((X[:, 0] + X[:, 1] - X[:, 2]) > 0).astype(int)
+    return X, y
+
+
+# ======================================================================
+# Benchmark runner
+# ======================================================================
+
+def run_benchmark(chunk_size=50):
+    X, y = make_dataset(n=500)
+
+    models = {
+        "DecisionTree":   DecisionTreeClassifier(max_depth=4),
+        "RandomForest":   RandomForestClassifier(n_estimators=10, max_depth=4),
+        "Bagging":        BaggingClassifier(n_estimators=10, max_depth=4),
+        "Boosting":       BoostingClassifier(n_estimators=10, max_depth=1),
+    }
+
+    trainers = {
+        name: StreamTrainer(model, verbose=False)
+        for name, model in models.items()
+    }
+
+    # ---- Stream each model through the same chunks -------------------
+    for name, trainer in trainers.items():
+        trainer.stream(X, y, chunk_size=chunk_size)
+
+    # ---- Print summary table -----------------------------------------
+    print("\n" + "=" * 65)
+    print(f"{'Model':<18}  {'Cum Acc':>8}  {'Avg Time(s)':>11}  {'Final Mem(KB)':>13}")
+    print("-" * 65)
+
+    for name, trainer in trainers.items():
+        cum_acc   = trainer.cumulative_accuracy()
+        avg_time  = np.mean(trainer.time_history())
+        final_mem = trainer.memory_history()[-1]
+        print(f"{name:<18}  {cum_acc:>8.4f}  {avg_time:>11.4f}  {final_mem:>13.1f}")
+
+    print("=" * 65)
+
+    # ---- Plots -------------------------------------------------------
+    # 1. Accuracy comparison: Tree vs Forest
+    compare_models(
+        trainers["DecisionTree"].accuracy_history(),
+        trainers["RandomForest"].accuracy_history(),
+        labels=("Decision Tree", "Random Forest"),
+        title="Streaming Accuracy: Tree vs Random Forest",
+        ylabel="Accuracy",
+        save_path="benchmark_tree_vs_forest.png"
+    )
+
+    # 2. Accuracy comparison: Bagging vs Boosting
+    compare_models(
+        trainers["Bagging"].accuracy_history(),
+        trainers["Boosting"].accuracy_history(),
+        labels=("Bagging", "Boosting"),
+        title="Streaming Accuracy: Bagging vs Boosting",
+        ylabel="Accuracy",
+        save_path="benchmark_bagging_vs_boosting.png"
+    )
+
+    # 3. Memory growth: all models
+    _plot_all_memory(trainers)
+
+    # 4. Time per chunk: all models
+    _plot_all_time(trainers)
+
+    print("\nPlots saved:")
+    print("  benchmark_tree_vs_forest.png")
+    print("  benchmark_bagging_vs_boosting.png")
+    print("  benchmark_memory.png")
+    print("  benchmark_time.png")
+
+    return trainers
+
+
+# ======================================================================
+# Multi-model memory + time plots
+# ======================================================================
+
+def _plot_all_memory(trainers):
+    """Plot memory (KB) over chunks for all models on one chart."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    colors = ['steelblue', 'tomato', 'seagreen', 'darkorange']
+
+    for (name, trainer), color in zip(trainers.items(), colors):
+        mem = trainer.memory_history()
+        ax.plot(range(1, len(mem) + 1), mem, label=name, color=color, linewidth=2)
+
+    ax.set_title("Model Memory Footprint Over Streaming Chunks")
+    ax.set_xlabel("Chunk")
+    ax.set_ylabel("Memory (KB)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("benchmark_memory.png", bbox_inches='tight')
+    plt.close()
+
+
+def _plot_all_time(trainers):
+    """Plot time per chunk (seconds) for all models on one chart."""
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    colors = ['steelblue', 'tomato', 'seagreen', 'darkorange']
+
+    for (name, trainer), color in zip(trainers.items(), colors):
+        times = trainer.time_history()
+        ax.plot(range(1, len(times) + 1), times, label=name,
+                color=color, linewidth=2, marker='o', markersize=3)
+
+    ax.set_title("Time per Chunk (seconds)")
+    ax.set_xlabel("Chunk")
+    ax.set_ylabel("Time (s)")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig("benchmark_time.png", bbox_inches='tight')
+    plt.close()
+
+
+# ======================================================================
+# Entry point
+# ======================================================================
 
 if __name__ == "__main__":
-    main()
+    print("Running streaming benchmark  (chunk_size=50, n=500)")
+    run_benchmark(chunk_size=50)
