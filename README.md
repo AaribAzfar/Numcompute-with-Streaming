@@ -67,16 +67,16 @@ for streaming workflows.
   - Streaming
 
 - 📡 **Streaming Learning**
-- Chunk-based training
-- Online model updates
-- Online metric tracking
-- StreamTrainer abstraction
+  - Chunk-based training
+  - Online model updates
+  - Online metric tracking
+  - StreamTrainer abstraction
 
 - 📈 **Visualisation**
-- Accuracy over time
-- Error over time
-- Model comparison plots
-- Streaming metric visualisation
+  - Accuracy over time
+  - Error over time
+  - Model comparison plots
+  - Streaming metric visualisation
 
 - ⏱ **Benchmarking**
   - Compared Tree and ensemble
