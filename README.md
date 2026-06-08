@@ -23,11 +23,11 @@ The project supports end-to-end machine learning workflows, including data inges
   - Quickselect (k-th smallest)
   - Binary search
 
-Supports:
+  Supports:
 
-- fit()
-- transform()
-- partial_fit()
+    - fit()
+    - transform()
+    - partial_fit()
 
 for streaming workflows.
 
@@ -41,16 +41,16 @@ for streaming workflows.
   - Streaming
 
 - 🌳 **Decision Trees**
-- DecisionTreeClassifier
-- Gini impurity splitting
-- Configurable depth
-- Incremental updates via partial_fit()
+  - DecisionTreeClassifier
+  - Gini impurity splitting
+  - Configurable depth
+  - Incremental updates via partial_fit()
 
 - 🌲 **Ensemble Learning**
-- Random Forest Classifier
-- Bootstrap sampling
-- Majority voting
-- Multiple decision trees
+  - Random Forest Classifier
+  - Bootstrap sampling
+  - Majority voting
+  - Multiple decision trees
 
 - 📏 **Metrics**
   - Accuracy, Precision, Recall, F1-score
